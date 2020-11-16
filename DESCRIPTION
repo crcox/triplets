@@ -1,0 +1,15 @@
+Package: triplets
+Type: Package
+Title: Work with Triplet Data and Embeddings
+Version: 0.1.0
+Author: Christopher R. Cox
+Maintainer: Christopher R. Cox <chriscox@lsu.edu>
+Description: More about what it does (maybe more than one line)
+    Use four spaces when indenting paragraphs within the Description.
+License: MIT
+Encoding: UTF-8
+LazyData: true
+Suggests: 
+    testthat
+Depends: 
+    R (>= 2.10)

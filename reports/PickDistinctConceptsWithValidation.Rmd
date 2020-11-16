@@ -1,0 +1,109 @@
+---
+title: "Pick distinct concepts with validation set"
+author: "Christopher R. Cox"
+date: "11/15/2020"
+output: html_document
+---
+
+# Motivation
+
+# Get the code and old data
+The code used in this script is packaged and accessible via GitHub. The `legacy3D` dataset is from a very early attempt at estimating the representational similarity among 135 emotion words.
+The study collected more than 88,000 responses from 200 participants, who provided 440 responses on average (median 352).
+The data were embedded in three dimensions by Kevin Jamieson (then graduate student at UW-Madison, now faculty at University of Washington (the other UW)) using code that was actively under development. These embeddings are represented in `legacy3D`, with column labels added to roughly reflect some terms used in the literature for discussing the structure of the emotion circumplex/emotion concept representation (citation needed). 
+
+```{r setup}
+# devtools::install_github("crcox/triplets")
+library('triplets')
+data("legacy3D")
+str(legacy3D)
+
+```
+
+# Identify a subset of words that are widely distributed over the embedding 
+The goal will be to use a small number of words that provide good coverage of
+the emotion space.
+Using a small numbr of cue words will help us to learn about the structure of the space more quickly (fewer words means less mapping needs to be done).
+In the future, we will not randomly sample triplets, but instead use smart active-sampling to map larger sets of words efficiency.
+
+First, we compute all pairwise distances.
+Then, I consider two approaches for identifying a "good" set of 30 words.
+
+## Global optimization
+This method involves sampling sets of 30 words at random, and then looking at the sum of their pairwise distances.
+Repeating this many times, I seek a set of 30 words that maximized the sum of pairwise distances.
+In particular, I am sampling 10,000 times.
+
+For the sake of science and understanding these optimizations better, I repeated the 10,000 sample search 1,000 times. This allowed me to observe the variability in solutions obtained by this optimization.
+
+## Iterative local optimization
+This method involves selecting words one at a time, each time selecting the word that maximizes the sum of distances from all previously selected words. Pick a word at random to start. The next word is the one which is most distant from that one. The word after that is the most distant from the previous two words overall... and on and on.
+
+For the sake of science and understanding these optimizations better, I repeated the iterative search 1,000 times. This allowed me to observe the variability in solutions obtained by this optimization. (Note: really, this method only has as many unique solutions as there are cue words (in this case, 135) I did 1,000 just to match the previous simulation, and so that frequency distributions would be on similar scale).
+
+```{r evaluate optimizations}
+# Distance matrix ----
+rownames(legacy3D) <- legacy3D$word
+D.full <- as.matrix(dist(legacy3D[, -1]))
+
+# Simulate many selections using different strategies ----
+# a. Global optimization of the sum of distances
+# --> Sample N words at random
+# --> Sum the pairwise differences
+# --> Repeat, retaining the N words with largest sum.
+words.30.simA <- replicate(1e3, choose_distinct_concepts_maxFun(D.full, 30, niter = 1e4, max.fun = "sum"), simplify = FALSE)
+words.30.simA.stats <- summarize_simulation_dist(words.30.simA, D.full)
+with(words.30.simA.stats, plot_simulation_dist(stats, stats.full))
+
+# b. Iterative optimization of the sum of distances
+# --> Sample one word at random
+# --> Find the word with the largest distance from this word.
+# --> Then find the word with the largest sum of difference to these two words.
+# --> Repeat until N words hvae been selected.
+words.30.simB <- replicate(1e3, choose_distinct_concepts_iterMaxSum(D.full, 30), simplify = FALSE)
+words.30.simB.stats <- summarize_simulation_dist(words.30.simB, D.full)
+with(words.30.simB.stats, plot_simulation_dist(stats, stats.full))
+```
+
+## Summary of simulations
+The iterative method does a better job at optimizing the sum of distances, and yields more stable solutions (no matter which word I start the search with, I end up in a decent place). The minimum distance tends to be a bit lower than the global optimization, but this is not of real importance. As a bonus, the iterative method finds good solutions with much less computational effort.
+
+## Select 30 words
+Based on the simulations, I will take the iterative solution that maximizes the sum of distances.
+
+```{r pick set of 30 words to study}
+words.30 <- best_simulation_dist(words.30.simB, words.30.simB.stats)
+D.30 <- D.full[words.30$ix, words.30$ix]
+write.csv(data.frame(index = words.30$ix, word = words.30$words), file = "20201116_sample_30word.csv")
+```
+
+## Assess the triplets and choose a validation set
+Given 30 words, there are $30 \times choose(29, 2) = 12,180$ triplets.
+This is a large number, but it's not too much to represent in memory, so we can consider the *strength* of each possible triplet. This is taken to be the larger of the two relevant distances in triplet (those between each alternative and the reference) divided by the sum of the distances. If one of the distances is zero, this would yield a strength of one---we have a strong expectation about how people will behave when given this triplet. Conversely, if the two distances are equal, then the strength is $0.5$---we have no basis for expecting participants to behave one way or the other.
+
+When we sample the validation set, ideally we want to have good representation of the full triplet set and of the 30 words, but with a relatively small number of triplets (so that most of the participants' time is spent on the triplets that will be used to fit the embedding).
+
+```{r pick validation set}
+# Generate all triplets for the 30 words selected ----
+# Strength is pmax(x, y) / x + y, where x and y are the distances of the two
+# options from the reference word.
+tt.mat <- triplets(30)
+tt <- get_distances(tt.mat[1, ], tt.mat[2, ], tt.mat[3, ], D.30, as_df = TRUE)
+tt$strength <- strength(tt$dist_ref_i, tt$dist_ref_j)
+hist(tt$strength, freq = FALSE)
+
+# Select a validation set ----
+# We want the validation set to have a strength distribution that is similar to
+# the full set of triplets. We especially do not want to over or under sample
+# triplets with very high or very low strengths.
+tt.samp.mat <- triplets(nrow(D.30), each = 6)
+tt.samp <- get_distances(tt.samp.mat[1, ], tt.samp.mat[2, ], tt.samp.mat[3, ], D.30, as_df = TRUE)
+tt.samp$strength <- strength(tt.samp$dist_ref_i, tt.samp$dist_ref_j)
+hist(tt.samp$strength, freq = FALSE, ylim = c(0, 6))
+
+# We also would like good representation of words as reference and as options
+table(c(tt.samp$i, tt.samp$j))
+table(tt.samp$ref)
+
+write.csv(tt.samp, file = "20201116_validation_30word.csv")
+```
